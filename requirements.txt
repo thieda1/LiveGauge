@@ -1,0 +1,5 @@
+# Requirements for multi-source version (all features)
+pygame>=2.0.0
+obd>=0.7.0
+pyserial>=3.5
+pyirsdk>=1.0.0
