@@ -1,30 +1,37 @@
 import pygame
 import math
 import time
-import obd  # Add real OBD-II support
-import serial.tools.list_ports  # For port detection
 import csv
 from collections import deque
 import datetime
 
+# Optional OBD imports - handle gracefully if not available
+try:
+    import obd
+    import serial.tools.list_ports
+    OBD_AVAILABLE = True
+except ImportError:
+    OBD_AVAILABLE = False
+    print("OBD library not available. Using mock data only.")
+
 # Initialize Pygame with hardware acceleration
 pygame.init()
 screen = pygame.display.set_mode((800, 480), pygame.HWSURFACE | pygame.DOUBLEBUF)
-pygame.display.set_caption("OBD2 Dashboard - Magden Style")
+pygame.display.set_caption("Magden Dashboard - OBD2")
 clock = pygame.time.Clock()
 
 # Colors
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 BLUE = (0, 120, 255)
-YELLOW = (255, 255, 0)  # Added for 5000 RPM threshold
-RED = (255, 0, 0)  # Added for 6000 RPM threshold
+YELLOW = (255, 255, 0)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
 GRAY = (50, 50, 50)
-DARK_GRAY = (30, 30, 30)  # For button background
+DARK_GRAY = (30, 30, 30)
 
 # Font cache to avoid reloading fonts every frame
 font_cache = {}
-
 
 def get_cached_font(size):
     """Load and cache fonts to improve performance"""
@@ -32,9 +39,8 @@ def get_cached_font(size):
         try:
             font_cache[size] = pygame.font.Font("Race Sport.ttf", size)
         except:
-            font_cache[size] = pygame.font.Font(None, size)  # Fallback to default
+            font_cache[size] = pygame.font.Font(None, size)
     return font_cache[size]
-
 
 # Pre-load commonly used fonts
 FONT_60 = get_cached_font(60)
@@ -48,7 +54,7 @@ FONT_18 = get_cached_font(18)
 logging_active = False
 logging_start_time = None
 logging_end_time = None
-log_buffer = deque(maxlen=300)  # 5 minutes at 1-second intervals
+log_buffer = deque(maxlen=300)
 log_file = None
 
 
@@ -74,18 +80,18 @@ class MockOBD:
     def query(self, cmd):
         t = time.time()
         if cmd == "GET_DTC":
-            return MockOBDResponse(self.dtcs)  # Return the DTC list directly
+            return MockOBDResponse(self.dtcs)
         elif cmd == "CLEAR_DTC":
             self.dtcs = []
             return MockOBDResponse(True)
         elif cmd == "TIMING_ADVANCE":
-            return MockOBDResponse(10 + 5 * math.sin(t * 0.5))  # Mock timing advance
+            return MockOBDResponse(10 + 5 * math.sin(t * 0.5))
         elif cmd == "ENGINE_LOAD":
-            return MockOBDResponse(50 + 25 * math.sin(t * 0.5))  # Mock engine load
+            return MockOBDResponse(50 + 25 * math.sin(t * 0.5))
         elif cmd == "THROTTLE_POS":
-            return MockOBDResponse(30 + 20 * math.sin(t * 0.5))  # Mock throttle position
+            return MockOBDResponse(30 + 20 * math.sin(t * 0.5))
         elif cmd == "MAF":
-            return MockOBDResponse(100 + 50 * math.sin(t * 0.5))  # Mock MAF
+            return MockOBDResponse(100 + 50 * math.sin(t * 0.5))
         elif cmd == "RPM":
             return MockOBDResponse(4000 + 3000 * math.sin(t * 0.5))
         elif cmd == "SPEED":
@@ -118,32 +124,37 @@ class MockCommands:
 
 # OBD connection setup
 def find_obd_port():
+    if not OBD_AVAILABLE:
+        return None
     ports = serial.tools.list_ports.comports()
     for port in ports:
         if "usbserial" in port.device or "ttyUSB" in port.device or "ttyACM" in port.device:
             print(f"Found potential OBD port: {port.device}")
             return port.device
-    print("No OBD port found. Falling back to mock data.")
+    print("No OBD port found.")
     return None
 
 
-port = find_obd_port()
-if port:
-    try:
-        real_connection = obd.OBD(port)
-    except:
-        real_connection = None
-else:
-    real_connection = None
+# Initialize connection
+use_real_data = False
+connection = MockOBD()
+commands = MockCommands()
 
-use_real_data = real_connection is not None and real_connection.is_connected()
-if use_real_data:
-    connection = real_connection
-    commands = obd.commands
-else:
-    print("No OBD connection established. Using mock data.")
-    connection = MockOBD()
-    commands = MockCommands()
+if OBD_AVAILABLE:
+    port = find_obd_port()
+    if port:
+        try:
+            real_connection = obd.OBD(port)
+            if real_connection.is_connected():
+                use_real_data = True
+                connection = real_connection
+                commands = obd.commands
+                print("OBD-II connection established!")
+        except Exception as e:
+            print(f"Failed to connect to OBD: {e}")
+
+if not use_real_data:
+    print("Using mock data")
 
 
 def get_value(cmd, mock_value, max_value, is_temp=False, is_speed=False):
@@ -191,7 +202,7 @@ def start_logging():
     if not logging_active:
         logging_active = True
         logging_start_time = time.time()
-        logging_end_time = logging_start_time + 300  # 5 minutes after button press
+        logging_end_time = logging_start_time + 300
         filename = f"obd_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         log_file = open(filename, 'w', newline='')
         writer = csv.DictWriter(log_file, fieldnames=[
@@ -199,17 +210,15 @@ def start_logging():
             "rpm", "speed", "coolant_temp", "intake_temp", "fuel_level", "battery_voltage"
         ])
         writer.writeheader()
-        # Write buffered data
         for data in log_buffer:
             writer.writerow(data)
         print(f"Logging started, writing to {filename}")
 
 
 def draw_magden_gauge(surface, x, y, radius, value, max_value, label, units="", decimal_places=0):
-    pygame.draw.circle(surface, (20, 20, 40), (x, y), radius + 5, 0)  # Dark inner fill
-    pygame.draw.circle(surface, BLUE, (x, y), radius + 2, 2)  # Neon outline
+    pygame.draw.circle(surface, (20, 20, 40), (x, y), radius + 5, 0)
+    pygame.draw.circle(surface, BLUE, (x, y), radius + 2, 2)
 
-    # Determine arc color based on RPM value (only for RPM gauge)
     arc_color = BLUE
     if label == "RPM":
         if value >= 6000:
@@ -217,12 +226,12 @@ def draw_magden_gauge(surface, x, y, radius, value, max_value, label, units="", 
         elif value >= 4000:
             arc_color = YELLOW
 
-    angle = (value / max_value) * 270  # Proportion of 270° range
-    start_angle = math.radians(230)  # Start at bottom left
-    end_angle = math.radians(250 - angle)  # Decrease angle for counterclockwise sweep
-    inner_radius = radius - 5  # Bar follows inside edge
+    angle = (value / max_value) * 270
+    start_angle = math.radians(230)
+    end_angle = math.radians(250 - angle)
+    inner_radius = radius - 5
     pygame.draw.arc(surface, arc_color, (x - inner_radius, y - inner_radius, inner_radius * 2, inner_radius * 2),
-                    end_angle, start_angle, 15)  # Reverse order for counterclockwise
+                    end_angle, start_angle, 15)
 
     value_text = FONT_60.render(f"{value:.{decimal_places}f}", True, WHITE)
     surface.blit(value_text, (x - value_text.get_width() // 2, y - 20))
@@ -268,11 +277,15 @@ def draw_digital_box(surface, x, y, width, height, value, max_value, label, unit
     surface.blit(units_text, (x - units_text.get_width() // 2, y + 20))
 
 
-# Screen 1
 def draw_magden_cluster_screen1(surface, x, y):
     pygame.draw.rect(surface, GRAY, (x - 400, y - 200, 800, 480), 0)
     logo_text = FONT_30.render("magden", True, BLUE)
     surface.blit(logo_text, (x - logo_text.get_width() // 2, y - 190))
+    
+    # OBD status indicator
+    status_color = GREEN if use_real_data else YELLOW
+    status_text = FONT_18.render("OBD-II" if use_real_data else "MOCK", True, status_color)
+    surface.blit(status_text, (10, 10))
 
     t = time.time()
     mock_iat = 70 + 50 * math.sin(t * 0.5)
@@ -283,8 +296,8 @@ def draw_magden_cluster_screen1(surface, x, y):
     mock_rpm = 4000 + 3000 * math.sin(t * 0.5)
 
     iat_value = get_value(commands.INTAKE_TEMP, mock_iat, 250, is_temp=True)
-    fuel_value = get_value(commands.FUEL_LEVEL if use_real_data else commands.FUEL_LEVEL, mock_fuel, 100)
-    bat_value = get_value(commands.ELM_VOLTAGE if use_real_data else commands.ELM_VOLTAGE, mock_bat, 20)
+    fuel_value = get_value(commands.FUEL_LEVEL, mock_fuel, 100)
+    bat_value = get_value(commands.ELM_VOLTAGE, mock_bat, 20)
     speed_value = get_value(commands.SPEED, mock_speed, 160, is_speed=True)
     ect_value = get_value(commands.COOLANT_TEMP, mock_ect, 250, is_temp=True)
     rpm_value = get_value(commands.RPM, mock_rpm, 7000)
@@ -296,31 +309,25 @@ def draw_magden_cluster_screen1(surface, x, y):
     draw_magden_gauge(surface, x + 240, y - 40, 150, rpm_value, 7000, "RPM", "")
     draw_magden_gauge(surface, x + 240, y + 147.5, 125, speed_value, 160, "SPD", "MPH")
 
-    # Draw Log button in bottom-right corner as a small square
     draw_button(surface, 770, 450, 25, 25, "L", active=logging_active)
 
     return rpm_value, speed_value, ect_value, iat_value, fuel_value, bat_value
 
 
-# Helper function to wrap text
 def wrap_text(text, font, max_width):
     words = text.split(' ')
     lines = []
     current_line = []
-    current_width = 0
 
     for word in words:
         test_line = ' '.join(current_line + [word])
-        # Optimized: use font.size() instead of rendering
         text_width = font.size(test_line)[0]
         if text_width <= max_width:
             current_line.append(word)
-            current_width = text_width
         else:
             if current_line:
                 lines.append(' '.join(current_line))
             current_line = [word]
-            current_width = font.size(word)[0]
 
     if current_line:
         lines.append(' '.join(current_line))
@@ -328,7 +335,6 @@ def wrap_text(text, font, max_width):
     return lines
 
 
-# Screen 2 (formerly Screen 4)
 def draw_magden_cluster_screen2(surface, x, y):
     pygame.draw.rect(surface, GRAY, (x - 400, y - 200, 800, 480), 0)
     logo_text = FONT_30.render("magden", True, BLUE)
@@ -341,9 +347,9 @@ def draw_magden_cluster_screen2(surface, x, y):
     title_text = FONT_25.render("Diagnostic Trouble Codes", True, WHITE)
     surface.blit(title_text, (x - title_text.get_width() // 2, y - 100))
 
-    if dtcs:  # empty lists are False-y
+    if dtcs:
         y_offset = -50
-        max_width = 700  # Limit text width to fit within screen
+        max_width = 700
         for code, desc in dtcs[:5]:
             dtc_text = f"{code}: {desc}"
             wrapped_lines = wrap_text(dtc_text, FONT_20, max_width)
@@ -351,22 +357,17 @@ def draw_magden_cluster_screen2(surface, x, y):
                 text_surface = FONT_20.render(line, True, WHITE)
                 surface.blit(text_surface, (x - 350, y + y_offset))
                 y_offset += 30
-            y_offset += 10  # Extra spacing between DTC entries
+            y_offset += 10
     else:
         no_dtc_text = FONT_20.render("No DTCs Found", True, WHITE)
         surface.blit(no_dtc_text, (x - no_dtc_text.get_width() // 2, y - 50))
 
-    # Draw Clear DTC button
     draw_button(surface, x - 75, y + 150, 150, 40, "Clear DTC")
-
-    # Draw Log button in bottom-right corner as a small square
     draw_button(surface, 770, 450, 25, 25, "L", active=logging_active)
 
-    # Return dummy values for parameters not displayed on this screen
     return 0, 0, 0, 0, 0, 0
 
 
-# Screen 3 (formerly Screen 5)
 def draw_magden_cluster_screen3(surface, x, y):
     pygame.draw.rect(surface, GRAY, (x - 400, y - 200, 800, 480), 0)
     logo_text = FONT_30.render("magden", True, BLUE)
@@ -386,26 +387,26 @@ def draw_magden_cluster_screen3(surface, x, y):
     throttle_value = get_value(commands.THROTTLE_POS, mock_throttle, 100)
     maf_value = get_value(commands.MAF, mock_maf, 500)
 
-    # Draw digital boxes in a tightened 2x2 grid, centered and moved down
     box_width = 120
     box_height = 80
-    h_spacing = 20  # Reduced horizontal spacing
-    v_spacing = 20  # Reduced vertical spacing
+    h_spacing = 20
+    v_spacing = 20
     grid_width = (2 * box_width) + h_spacing
     grid_height = (2 * box_height) + v_spacing
     grid_x = x - grid_width // 2
-    grid_y = y - 50 + grid_height // 2  # Moved down to clear title
+    grid_y = y - 50 + grid_height // 2
 
-    draw_digital_box(surface, grid_x + box_width // 2, grid_y - box_height // 2 - v_spacing // 2, box_width, box_height,
-                     timing_value, 50, "TIMING", "°", 1)
+    draw_digital_box(surface, grid_x + box_width // 2, grid_y - box_height // 2 - v_spacing // 2, 
+                     box_width, box_height, timing_value, 50, "TIMING", "°", 1)
     draw_digital_box(surface, grid_x + box_width + h_spacing + box_width // 2,
-                     grid_y - box_height // 2 - v_spacing // 2, box_width, box_height, load_value, 100, "LOAD", "%", 1)
-    draw_digital_box(surface, grid_x + box_width // 2, grid_y + box_height // 2 + v_spacing // 2, box_width, box_height,
-                     throttle_value, 100, "THRTL", "%", 1)
+                     grid_y - box_height // 2 - v_spacing // 2, box_width, box_height, 
+                     load_value, 100, "LOAD", "%", 1)
+    draw_digital_box(surface, grid_x + box_width // 2, grid_y + box_height // 2 + v_spacing // 2, 
+                     box_width, box_height, throttle_value, 100, "THRTL", "%", 1)
     draw_digital_box(surface, grid_x + box_width + h_spacing + box_width // 2,
-                     grid_y + box_height // 2 + v_spacing // 2, box_width, box_height, maf_value, 500, "MAF", "g/s", 1)
+                     grid_y + box_height // 2 + v_spacing // 2, box_width, box_height, 
+                     maf_value, 500, "MAF", "g/s", 1)
 
-    # Draw Log button in bottom-right corner as a small square
     draw_button(surface, 770, 450, 25, 25, "L", active=logging_active)
 
     return 0, 0, 0, 0, 0, 0, timing_value, load_value, throttle_value, maf_value
@@ -415,13 +416,11 @@ def draw_magden_cluster_screen3(surface, x, y):
 current_screen = 1
 running = True
 last_log_time = time.time()
-
-# Target 30 FPS for better Raspberry Pi performance
 TARGET_FPS = 30
 
 while running:
     frame_start = time.time()
-
+    
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -447,7 +446,6 @@ while running:
 
     screen.fill(BLACK)
 
-    # Collect parameters for logging
     t = time.time()
     mock_timing = 10 + 5 * math.sin(t * 0.5)
     mock_load = 50 + 25 * math.sin(t * 0.5)
@@ -465,19 +463,17 @@ while running:
     throttle_value = get_value(commands.THROTTLE_POS, mock_throttle, 100)
     maf_value = get_value(commands.MAF, mock_maf, 500)
     iat_value = get_value(commands.INTAKE_TEMP, mock_iat, 250, is_temp=True)
-    fuel_value = get_value(commands.FUEL_LEVEL if use_real_data else commands.FUEL_LEVEL, mock_fuel, 100)
-    bat_value = get_value(commands.ELM_VOLTAGE if use_real_data else commands.ELM_VOLTAGE, mock_bat, 20)
+    fuel_value = get_value(commands.FUEL_LEVEL, mock_fuel, 100)
+    bat_value = get_value(commands.ELM_VOLTAGE, mock_bat, 20)
     speed_value = get_value(commands.SPEED, mock_speed, 160, is_speed=True)
     ect_value = get_value(commands.COOLANT_TEMP, mock_ect, 250, is_temp=True)
     rpm_value = get_value(commands.RPM, mock_rpm, 7000)
 
-    # Log data every second
     if time.time() - last_log_time >= 1.0:
         log_parameters(timing_value, load_value, throttle_value, maf_value, rpm_value, speed_value, ect_value,
                        iat_value, fuel_value, bat_value)
         last_log_time = time.time()
 
-    # Stop logging after 5 minutes post-button press
     if logging_active and time.time() > logging_end_time:
         logging_active = False
         if log_file:
@@ -497,8 +493,7 @@ while running:
     draw_button(screen, 440, 40, 25, 25, "3", active=(current_screen == 3))
 
     pygame.display.flip()
-
-    # Frame rate control - maintain consistent 30 FPS
+    
     elapsed = time.time() - frame_start
     target_frame_time = 1.0 / TARGET_FPS
     if elapsed < target_frame_time:
@@ -506,6 +501,6 @@ while running:
 
 pygame.quit()
 if use_real_data:
-    real_connection.close()
+    connection.close()
 if log_file:
     log_file.close()
